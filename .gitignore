@@ -10,7 +10,7 @@ venv/
 .env
 .env.*
 
-# Modelos e datasets (grandes demais para o git)
+# Modelos e artefatos de treino (grandes demais para o git)
 *.bin
 *.safetensors
 *.gguf
@@ -19,7 +19,11 @@ venv/
 checkpoints/
 outputs/
 wandb/
-data/
+
+# Dados: o corpus baixado fica de fora, mas o dataset de exemplo é versionado
+data/*
+!data/exemplo/
+!data/.gitkeep
 
 # macOS
 .DS_Store
