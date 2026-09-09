@@ -34,9 +34,11 @@ from comum import (
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--epocas", type=float, default=3)
-    # 2e-5 é a ordem de grandeza certa para fine-tuning completo. O learning rate
-    # do pré-treino (1e-3 ou mais) apagaria o que o modelo já sabe.
-    parser.add_argument("--lr", type=float, default=2e-5)
+    # 1e-4 é alto para fine-tuning completo, mas este dataset é minúsculo: 128
+    # exemplos em batch de 4 dão só 32 passos por época. Com o 2e-5 clássico de
+    # datasets grandes, a perda de validação mal sai do lugar em 3 épocas
+    # (3.35 -> 3.23). Learning rate se calibra junto com o número de passos.
+    parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--batch", type=int, default=4)
     args = parser.parse_args()
 
@@ -76,7 +78,14 @@ def main() -> None:
             lr_scheduler_type="cosine",
             logging_steps=10,
             eval_strategy="epoch",   # a perda de validação é o que denuncia overfitting
-            save_strategy="no",
+            # Guardar só o último checkpoint é um erro clássico: se o overfitting
+            # começou no meio do treino, o melhor modelo ficou para trás. Aqui o
+            # Trainer avalia a cada época e restaura o de menor perda de validação.
+            save_strategy="epoch",
+            save_total_limit=1,
+            load_best_model_at_end=True,
+            metric_for_best_model="eval_loss",
+            greater_is_better=False,
             report_to=[],
             seed=42,
         ),
@@ -101,6 +110,10 @@ def main() -> None:
 
     print("\nSe a coluna de validação parar de cair enquanto a de treino continua")
     print("caindo, o modelo passou de aprender para decorar: isso é overfitting.")
+    melhor = min((r["eval_loss"], r["epoch"]) for r in treinador.state.log_history
+                 if "eval_loss" in r)
+    print(f"Melhor validação: {melhor[0]:.4f} na época {melhor[1]:.0f} "
+          f"— foram esses os pesos restaurados e salvos.")
 
     modelo.save_pretrained(saida)
     tokenizer.save_pretrained(saida)

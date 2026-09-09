@@ -85,7 +85,11 @@ def main() -> None:
             lr_scheduler_type="cosine",
             logging_steps=10,
             eval_strategy="epoch",
-            save_strategy="no",
+            save_strategy="epoch",
+            save_total_limit=1,
+            load_best_model_at_end=True,
+            metric_for_best_model="eval_loss",
+            greater_is_better=False,
             report_to=[],
             seed=42,
         ),
@@ -101,11 +105,18 @@ def main() -> None:
         if "eval_loss" in reg:
             print(f"  época {reg['epoch']:>4.1f} | {reg['eval_loss']:.4f}")
 
-    # Salva SÓ o adaptador: alguns MB contra ~540MB do modelo completo do passo 2.
+    # Salva SÓ o adaptador, não o modelo inteiro.
     modelo.save_pretrained(saida)
     tokenizer.save_pretrained(saida)
-    tamanho = sum(f.stat().st_size for f in saida.rglob("*") if f.is_file())
-    print(f"\nadaptador salvo em {saida} ({tamanho / 1e6:.1f} MB)")
+    print(f"\nadaptador salvo em {saida}")
+
+    peso_lora = saida / "adapter_model.safetensors"
+    peso_sft = DIR_SAIDA / "sft-completo" / "model.safetensors"
+    if peso_lora.exists():
+        print(f"  adapter_model.safetensors: {peso_lora.stat().st_size / 1e6:.2f} MB")
+    if peso_sft.exists():
+        print(f"  contra o modelo completo do passo 2: "
+              f"{peso_sft.stat().st_size / 1e6:.1f} MB")
     print(f"tempo de treino: {resultado.metrics['train_runtime']:.1f}s")
 
     mostrar_amostras(modelo, tokenizer, "DEPOIS do treino LoRA")

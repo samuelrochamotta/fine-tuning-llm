@@ -49,6 +49,20 @@ sai algo com estrutura de peça de teatro. E a perplexidade, impressa a cada
 avaliação, é a leitura intuitiva da perda — "entre quantos caracteres o modelo
 está hesitando a cada posição".
 
+Resultado real (MPS, 76s para 2000 passos):
+
+| Passo | Treino | Validação | Perplexidade |
+|------:|-------:|----------:|-------------:|
+| 0     | 4,32   | 4,32      | 75,3         |
+| 250   | 2,49   | 2,51      | 12,3         |
+| 2000  | 1,81   | 1,93      | 6,9          |
+
+No passo 0 a perplexidade é ~75: com 65 símbolos no vocabulário, o modelo hesita
+entre praticamente todos eles, que é exatamente o esperado de pesos aleatórios. No
+fim, hesita entre ~7. Repare também que treino e validação são idênticos no passo
+250 e já diferem em 0,12 no passo 2000 — é o overfitting nascendo, ainda inofensivo
+aqui e bem mais agressivo no passo 2.
+
 ### Passo 2 — fine-tuning completo de um modelo pré-treinado
 
 ```bash
@@ -71,6 +85,43 @@ toda a confiança do mundo. Essa é a lição mais importante do passo 2 — fin
 uma forma cara e ruim de injetar conhecimento factual, que pertence a um sistema de
 recuperação (RAG).
 
+**Resultados reais** (Apple M-series, MPS, 113s de treino). Com os defaults do
+script — 3 épocas, `lr=1e-4`:
+
+| Época | Treino | Validação |
+|------:|-------:|----------:|
+| 1     | 2,7837 | 2,8363    |
+| 2     | 2,3716 | 2,7732    |
+| 3     | 2,2695 | **2,7712** |
+
+Modelo base, para referência: 3,3485 de perda de validação.
+
+E o que acontece esticando o treino para 10 épocas (`--epocas 10 --lr 1e-4`):
+
+| Época | Treino | Validação |
+|------:|-------:|----------:|
+| 1     | 3,1494 | 2,9585    |
+| 2     | 2,3726 | **2,7604** |
+| 3     | 1,9502 | 2,8311    |
+| 5     | 1,4041 | 3,1126    |
+| 10    | 1,1252 | 3,2771    |
+
+Esse é o gráfico de overfitting inteiro. A perda de treino cai de 3,15 para 1,13 e
+parece ótimo; a de validação toca o fundo na época 2 e sobe daí em diante. Na época
+10 o modelo é **pior em dados novos do que era na época 1**. Sem a coluna da direita,
+você declararia vitória.
+
+Vale registrar também o que NÃO funcionou: com `lr=2e-5` (o valor clássico para
+datasets grandes) e 3 épocas, a validação parava em 3,2277 — praticamente o modelo
+base intocado. Não é bug: 128 exemplos em batch de 4 dão só 32 passos por época, e
+learning rate se calibra junto com o número de passos, nunca em abstrato.
+
+**Um trade-off que aparece na prática:** o modelo de 10 épocas gera respostas mais
+bem formadas, que sabem parar, apesar da perda de validação pior. A perda mede
+predição token a token; ela não é métrica de qualidade de geração. Com 3 épocas o
+modelo às vezes entra em loop porque ainda não aprendeu direito a emitir o EOS. Os
+dois números medem coisas diferentes, e é preciso olhar os dois.
+
 ### Passo 3 — o mesmo resultado com LoRA
 
 ```bash
@@ -83,6 +134,23 @@ e treinam-se apenas matrizes de baixo posto acopladas às projeções `q_proj` e
 
 O artefato salvo é um **adaptador** de poucos MB, não um modelo inteiro. É a técnica
 que se usa de verdade ao subir para modelos de 1B a 8B numa GPU só.
+
+**Resultados reais** (8 épocas, `lr=2e-4`, rank 8, 85s de treino):
+
+| | Passo 2 (completo) | Passo 3 (LoRA) |
+|---|---:|---:|
+| Parâmetros treinados | 134.515.008 (100%) | 460.800 (**0,34%**) |
+| Melhor perda de validação | 2,7712 | 2,8420 |
+| Arquivo de pesos salvo | 538 MB | **1,86 MB** |
+| Tempo de treino | 113s | 85s |
+
+É o argumento inteiro da técnica em quatro linhas: 0,34% dos parâmetros e 0,35% do
+tamanho em disco, por 2,5% a mais de perda de validação. Em modelos de bilhões de
+parâmetros essa troca é o que separa o que cabe numa GPU do que não cabe.
+
+Note que o LoRA precisa de mais épocas e learning rate maior (8 e 2e-4, contra 3 e
+1e-4): com menos parâmetros livres, cada passo muda menos, e a curva de validação
+leva até a época 5 para achar o fundo.
 
 ### Comparar os três
 
