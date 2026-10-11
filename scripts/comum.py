@@ -48,16 +48,22 @@ def escolher_dispositivo() -> str:
     return "cpu"
 
 
-def montar_prompt(instrucao: str, tokenizer) -> str:
+def montar_prompt(instrucao: str, tokenizer, contexto: str | None = None) -> str:
     """Texto que antecede a resposta, no formato que o modelo espera.
 
     Modelo base não tem chat template: usamos o MOLDE_PROMPT inventado. Modelo
     instruct já vem com um (ChatML, no caso do SmolLM2), e é ele que deve ser
     usado — foi nesse formato que o modelo aprendeu a separar os turnos. Quem
     decide é o próprio tokenizer, que carrega o template junto.
+
+    `contexto` é o documento recuperado pelo RAG (`rag.py`): entra antes da
+    pergunta, num bloco próprio. Nenhum modelo foi treinado com esse bloco.
     """
     if tokenizer.chat_template is None:
-        return MOLDE_PROMPT.format(instrucao=instrucao)
+        prefixo = f"### Contexto:\n{contexto}\n\n" if contexto else ""
+        return prefixo + MOLDE_PROMPT.format(instrucao=instrucao)
+    if contexto:
+        instrucao = f"Contexto: {contexto}\n\n{instrucao}"
     return tokenizer.apply_chat_template(
         [{"role": "user", "content": instrucao}],
         tokenize=False,
@@ -243,7 +249,7 @@ def carregar_tokenizer(origem: str | Path = MODELO_BASE):
 
 @torch.no_grad()
 def gerar(modelo, tokenizer, instrucao: str, max_novos: int = 160,
-          detalhes: bool = False):
+          detalhes: bool = False, contexto: str | None = None):
     """Gera uma resposta. Sempre com o mesmo formato de prompt usado no treino.
 
     Com `detalhes=True` devolve também quantos tokens foram gerados e se o modelo
@@ -253,7 +259,8 @@ def gerar(modelo, tokenizer, instrucao: str, max_novos: int = 160,
     modelo.eval()  # desliga dropout: sem isto a saída varia entre chamadas iguais
     dispositivo = next(modelo.parameters()).device
     entrada = tokenizer(
-        montar_prompt(instrucao, tokenizer), return_tensors="pt", add_special_tokens=False
+        montar_prompt(instrucao, tokenizer, contexto), return_tensors="pt",
+        add_special_tokens=False,
     ).to(dispositivo)
 
     saida = modelo.generate(
