@@ -15,16 +15,18 @@ Uso:
 import argparse
 
 import torch
-from transformers import AutoModelForCausalLM, Trainer, TrainingArguments
+from transformers import AutoModelForCausalLM, TrainingArguments
 
 from comum import (
     DIR_SAIDA,
-    MODELO_BASE,
+    MODELOS,
     ColetorSFT,
     DatasetSFT,
     carregar_exemplos,
     carregar_tokenizer,
+    criar_treinador,
     escolher_dispositivo,
+    salvar_historico,
     passos_de_warmup,
     mostrar_amostras,
     resumir_parametros,
@@ -40,17 +42,25 @@ def main() -> None:
     # (3.35 -> 3.23). Learning rate se calibra junto com o número de passos.
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--batch", type=int, default=4)
+    parser.add_argument("--modelo", choices=sorted(MODELOS), default="base",
+                        help="ponto de partida: o modelo base ou a versão instruct")
+    parser.add_argument("--dataset", default="",
+                        help="sufixo dos arquivos de dados: 'grande' usa treino_grande.jsonl")
+    parser.add_argument("--peso-eos", type=float, default=1.0,
+                        help="multiplica a perda do token EOS no treino (1 = desligado)")
+    parser.add_argument("--saida", default="sft-completo",
+                        help="pasta dentro de outputs/; mude para não sobrescrever o run padrão")
     args = parser.parse_args()
 
     dispositivo = escolher_dispositivo()
     print(f"dispositivo: {dispositivo}")
 
-    tokenizer = carregar_tokenizer()
-    modelo = AutoModelForCausalLM.from_pretrained(MODELO_BASE).to(dispositivo)
+    tokenizer = carregar_tokenizer(MODELOS[args.modelo])
+    modelo = AutoModelForCausalLM.from_pretrained(MODELOS[args.modelo]).to(dispositivo)
     resumir_parametros(modelo)
 
-    ds_treino = DatasetSFT(carregar_exemplos("treino"), tokenizer)
-    ds_validacao = DatasetSFT(carregar_exemplos("validacao"), tokenizer)
+    ds_treino = DatasetSFT(carregar_exemplos("treino", args.dataset), tokenizer)
+    ds_validacao = DatasetSFT(carregar_exemplos("validacao", args.dataset), tokenizer)
     print(f"treino: {len(ds_treino)} exemplos | validação: {len(ds_validacao)} exemplos")
 
     # Vale olhar uma vez o que de fato entra no modelo: os tokens com label -100
@@ -63,8 +73,8 @@ def main() -> None:
 
     mostrar_amostras(modelo, tokenizer, "ANTES do fine-tuning (modelo base)")
 
-    saida = DIR_SAIDA / "sft-completo"
-    treinador = Trainer(
+    saida = DIR_SAIDA / args.saida
+    treinador = criar_treinador(
         model=modelo,
         args=TrainingArguments(
             output_dir=str(saida),
@@ -92,6 +102,8 @@ def main() -> None:
         train_dataset=ds_treino,
         eval_dataset=ds_validacao,
         data_collator=ColetorSFT(tokenizer),
+        processing_class=tokenizer,
+        peso_eos=args.peso_eos,
     )
 
     resultado = treinador.train()
@@ -119,6 +131,12 @@ def main() -> None:
     tokenizer.save_pretrained(saida)
     print(f"\nmodelo salvo em {saida}")
     print(f"tempo de treino: {resultado.metrics['train_runtime']:.1f}s")
+    salvar_historico(treinador, saida, args, {
+        "tecnica": "completo",
+        "parametros_treinaveis": sum(p.numel() for p in modelo.parameters()),
+        "tempo_treino_s": resultado.metrics["train_runtime"],
+        "tamanho_pesos_mb": (saida / "model.safetensors").stat().st_size / 1e6,
+    })
 
     mostrar_amostras(modelo, tokenizer, "DEPOIS do fine-tuning")
     print("Repare que o modelo passou a responder na estrutura de três campos do")

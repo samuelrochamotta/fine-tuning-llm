@@ -7,52 +7,32 @@ geração, saídas empilhadas.
 Uso:
     python scripts/comparar.py
     python scripts/comparar.py --prompt "O que é warmup?"
+    python scripts/comparar.py --modelo sft-lr5e-4 --modelo lora-todos
 """
 
 import argparse
 
-from transformers import AutoModelForCausalLM
-
 from comum import (
-    DIR_SAIDA,
-    MODELO_BASE,
     PROMPTS_DE_TESTE,
-    carregar_tokenizer,
+    carregar_modelo,
     escolher_dispositivo,
     gerar,
+    modelos_disponiveis,
 )
-
-
-def carregar_modelos(dispositivo: str) -> list[tuple[str, object]]:
-    modelos = [("base (sem treino)", AutoModelForCausalLM.from_pretrained(MODELO_BASE))]
-
-    caminho_sft = DIR_SAIDA / "sft-completo"
-    if (caminho_sft / "config.json").exists():
-        modelos.append(
-            ("passo 2 — fine-tuning completo",
-             AutoModelForCausalLM.from_pretrained(caminho_sft))
-        )
-
-    caminho_lora = DIR_SAIDA / "lora"
-    if (caminho_lora / "adapter_config.json").exists():
-        from peft import PeftModel
-
-        # O adaptador é carregado POR CIMA do modelo base — os pesos originais
-        # continuam intactos no disco e na memória.
-        base = AutoModelForCausalLM.from_pretrained(MODELO_BASE)
-        modelos.append(("passo 3 — LoRA", PeftModel.from_pretrained(base, caminho_lora)))
-
-    return [(nome, m.to(dispositivo)) for nome, m in modelos]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prompt", action="append", dest="prompts")
+    parser.add_argument("--modelo", action="append", dest="modelos", default=[],
+                        help="pasta extra em outputs/ (ou id do Hub) para incluir")
     args = parser.parse_args()
 
     dispositivo = escolher_dispositivo()
-    tokenizer = carregar_tokenizer()
-    modelos = carregar_modelos(dispositivo)
+    # Cada modelo vem com o PRÓPRIO tokenizer: o do instruct tem chat template e
+    # outro EOS, e usar o tokenizer errado estraga a geração sem erro nenhum.
+    modelos = [(nome, *carregar_modelo(origem, dispositivo))
+               for nome, origem in modelos_disponiveis(args.modelos)]
 
     if len(modelos) == 1:
         print("Só o modelo base foi encontrado. Rode antes os passos 2 e/ou 3 "
@@ -62,7 +42,7 @@ def main() -> None:
         print("=" * 74)
         print(f"PERGUNTA: {prompt}")
         print("=" * 74)
-        for nome, modelo in modelos:
+        for nome, modelo, tokenizer in modelos:
             print(f"\n--- {nome} ---")
             print(gerar(modelo, tokenizer, prompt))
         print()

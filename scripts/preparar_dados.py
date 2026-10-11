@@ -8,6 +8,11 @@ A resposta tem sempre a mesma estrutura de três campos. Essa rigidez é proposi
 é o que um modelo de 135M consegue de fato aprender com pouco dado, e é o que torna
 o efeito do fine-tuning visível a olho nu na comparação antes/depois.
 
+Também gera a versão "grande" (treino_grande.jsonl / validacao_grande.jsonl):
+os termos de glossario_extra.json entram SÓ no treino, e a validação é idêntica
+à do dataset original. Assim a única variável entre os dois é a quantidade de
+dados de treino, e as perdas de validação são diretamente comparáveis.
+
 Uso:
     python scripts/preparar_dados.py
 """
@@ -18,6 +23,7 @@ from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
 GLOSSARIO = RAIZ / "data" / "exemplo" / "glossario.json"
+GLOSSARIO_EXTRA = RAIZ / "data" / "exemplo" / "glossario_extra.json"
 SAIDA = RAIZ / "data" / "exemplo"
 
 # Proporção separada para validação. Sem isso não há como distinguir
@@ -41,10 +47,8 @@ def formatar_resposta(item: dict) -> str:
     )
 
 
-def main() -> None:
-    glossario = json.loads(GLOSSARIO.read_text(encoding="utf-8"))
-
-    exemplos = [
+def expandir(glossario: list[dict]) -> list[dict]:
+    return [
         {
             "instrucao": molde.format(termo=item["termo"]),
             "resposta": formatar_resposta(item),
@@ -53,6 +57,19 @@ def main() -> None:
         for item in glossario
         for molde in MOLDES_PERGUNTA
     ]
+
+
+def gravar(nome: str, dados: list[dict]) -> None:
+    caminho = SAIDA / f"{nome}.jsonl"
+    with caminho.open("w", encoding="utf-8") as f:
+        for exemplo in dados:
+            f.write(json.dumps(exemplo, ensure_ascii=False) + "\n")
+    print(f"{caminho.relative_to(RAIZ)}: {len(dados)} exemplos")
+
+
+def main() -> None:
+    glossario = json.loads(GLOSSARIO.read_text(encoding="utf-8"))
+    exemplos = expandir(glossario)
 
     # O split é por TERMO, não por exemplo: as quatro variações de um mesmo termo
     # precisam cair todas do mesmo lado. Se um termo aparecesse nos dois conjuntos,
@@ -64,16 +81,21 @@ def main() -> None:
 
     treino = [e for e in exemplos if e["termo"] not in termos_validacao]
     validacao = [e for e in exemplos if e["termo"] in termos_validacao]
-
-    for nome, dados in (("treino", treino), ("validacao", validacao)):
-        caminho = SAIDA / f"{nome}.jsonl"
-        with caminho.open("w", encoding="utf-8") as f:
-            for exemplo in dados:
-                f.write(json.dumps(exemplo, ensure_ascii=False) + "\n")
-        print(f"{caminho.relative_to(RAIZ)}: {len(dados)} exemplos")
+    gravar("treino", treino)
+    gravar("validacao", validacao)
 
     print(f"\nTermos reservados para validação ({len(termos_validacao)}): "
           f"{', '.join(sorted(termos_validacao))}")
+
+    if GLOSSARIO_EXTRA.exists():
+        extra = json.loads(GLOSSARIO_EXTRA.read_text(encoding="utf-8"))
+        repetidos = {i["termo"] for i in extra} & set(termos)
+        if repetidos:
+            raise SystemExit(f"termos repetidos entre os glossários: {repetidos}")
+        print(f"\nDataset grande: +{len(extra)} termos de "
+              f"{GLOSSARIO_EXTRA.name}, todos no treino")
+        gravar("treino_grande", treino + expandir(extra))
+        gravar("validacao_grande", validacao)
 
 
 if __name__ == "__main__":

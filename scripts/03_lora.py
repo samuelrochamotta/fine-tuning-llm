@@ -15,20 +15,29 @@ Uso:
 import argparse
 
 from peft import LoraConfig, TaskType, get_peft_model
-from transformers import AutoModelForCausalLM, Trainer, TrainingArguments
+from transformers import AutoModelForCausalLM, TrainingArguments
 
 from comum import (
     DIR_SAIDA,
-    MODELO_BASE,
+    MODELOS,
     ColetorSFT,
     DatasetSFT,
     carregar_exemplos,
     carregar_tokenizer,
+    criar_treinador,
     escolher_dispositivo,
+    salvar_historico,
     passos_de_warmup,
     mostrar_amostras,
     resumir_parametros,
 )
+
+# SmolLM2 tem a arquitetura do Llama: quatro projeções na atenção e três no MLP.
+ALVOS = {
+    "qv": ["q_proj", "v_proj"],
+    "todos": ["q_proj", "k_proj", "v_proj", "o_proj",
+              "gate_proj", "up_proj", "down_proj"],
+}
 
 
 def main() -> None:
@@ -38,14 +47,26 @@ def main() -> None:
     # learning rate uma ou duas ordens de grandeza maior que o do passo 2.
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--batch", type=int, default=4)
+    parser.add_argument("--modelo", choices=sorted(MODELOS), default="base",
+                        help="ponto de partida: o modelo base ou a versão instruct")
+    parser.add_argument("--dataset", default="",
+                        help="sufixo dos arquivos de dados: 'grande' usa treino_grande.jsonl")
+    parser.add_argument("--peso-eos", type=float, default=1.0,
+                        help="multiplica a perda do token EOS no treino (1 = desligado)")
+    parser.add_argument("--saida", default="lora",
+                        help="pasta dentro de outputs/; mude para não sobrescrever o run padrão")
     parser.add_argument("--rank", type=int, default=8)
+    parser.add_argument("--alpha", type=int, default=None,
+                        help="escala do adaptador; o padrão é 2*rank")
+    parser.add_argument("--alvos", choices=sorted(ALVOS), default="qv",
+                        help="qv = só query/value; todos = atenção inteira + MLP")
     args = parser.parse_args()
 
     dispositivo = escolher_dispositivo()
     print(f"dispositivo: {dispositivo}")
 
-    tokenizer = carregar_tokenizer()
-    modelo = AutoModelForCausalLM.from_pretrained(MODELO_BASE).to(dispositivo)
+    tokenizer = carregar_tokenizer(MODELOS[args.modelo])
+    modelo = AutoModelForCausalLM.from_pretrained(MODELOS[args.modelo]).to(dispositivo)
 
     print("\nmodelo base, antes do LoRA:")
     resumir_parametros(modelo)
@@ -55,25 +76,24 @@ def main() -> None:
         r=args.rank,                 # dimensão interna das matrizes adaptadoras
         # alpha/r é o que escala de fato o ajuste. Mantendo alpha = 2*r, dobrar o
         # rank não muda a escala do efeito, só a capacidade.
-        lora_alpha=args.rank * 2,
+        lora_alpha=args.alpha or args.rank * 2,
         lora_dropout=0.05,
-        # As projeções de query e value são o alvo clássico: dão quase todo o
-        # ganho pelo menor custo. Incluir k_proj/o_proj/MLP rende um pouco mais,
-        # por mais parâmetros.
-        target_modules=["q_proj", "v_proj"],
+        # As projeções de query e value são o alvo clássico: dão boa parte do
+        # ganho pelo menor custo. `--alvos todos` inclui k_proj, o_proj e o MLP.
+        target_modules=ALVOS[args.alvos],
     )
     modelo = get_peft_model(modelo, config)
 
-    print(f"\ncom LoRA (rank={args.rank}):")
+    print(f"\ncom LoRA (rank={args.rank}, alpha={config.lora_alpha}, alvos={args.alvos}):")
     resumir_parametros(modelo)
 
-    ds_treino = DatasetSFT(carregar_exemplos("treino"), tokenizer)
-    ds_validacao = DatasetSFT(carregar_exemplos("validacao"), tokenizer)
+    ds_treino = DatasetSFT(carregar_exemplos("treino", args.dataset), tokenizer)
+    ds_validacao = DatasetSFT(carregar_exemplos("validacao", args.dataset), tokenizer)
 
     mostrar_amostras(modelo, tokenizer, "ANTES do treino LoRA (adaptador zerado = modelo base)")
 
-    saida = DIR_SAIDA / "lora"
-    treinador = Trainer(
+    saida = DIR_SAIDA / args.saida
+    treinador = criar_treinador(
         model=modelo,
         args=TrainingArguments(
             output_dir=str(saida),
@@ -96,6 +116,8 @@ def main() -> None:
         train_dataset=ds_treino,
         eval_dataset=ds_validacao,
         data_collator=ColetorSFT(tokenizer),
+        processing_class=tokenizer,
+        peso_eos=args.peso_eos,
     )
 
     resultado = treinador.train()
@@ -118,6 +140,12 @@ def main() -> None:
         print(f"  contra o modelo completo do passo 2: "
               f"{peso_sft.stat().st_size / 1e6:.1f} MB")
     print(f"tempo de treino: {resultado.metrics['train_runtime']:.1f}s")
+    salvar_historico(treinador, saida, args, {
+        "tecnica": "lora",
+        "parametros_treinaveis": sum(p.numel() for p in modelo.parameters() if p.requires_grad),
+        "tempo_treino_s": resultado.metrics["train_runtime"],
+        "tamanho_pesos_mb": peso_lora.stat().st_size / 1e6 if peso_lora.exists() else None,
+    })
 
     mostrar_amostras(modelo, tokenizer, "DEPOIS do treino LoRA")
     print("Resultado parecido com o do passo 2, treinando uma fração dos pesos e")
