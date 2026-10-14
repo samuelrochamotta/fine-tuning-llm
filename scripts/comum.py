@@ -71,13 +71,15 @@ def montar_prompt(instrucao: str, tokenizer, contexto: str | None = None) -> str
     )
 
 
-def carregar_exemplos(nome: str, dataset: str = "") -> list[dict]:
-    """Lê data/exemplo/<nome>.jsonl, ou <nome>_<dataset>.jsonl (ex.: treino_grande)."""
-    caminho = DIR_DADOS / (f"{nome}_{dataset}.jsonl" if dataset else f"{nome}.jsonl")
+def carregar_exemplos(nome: str, dataset: str = "", pasta: Path = DIR_DADOS) -> list[dict]:
+    """Lê data/exemplo/<nome>.jsonl, ou <nome>_<dataset>.jsonl (ex.: treino_grande).
+
+    `pasta` troca o diretório: a fatura usa data/fatura/, fora do git.
+    """
+    caminho = pasta / (f"{nome}_{dataset}.jsonl" if dataset else f"{nome}.jsonl")
     if not caminho.exists():
-        raise SystemExit(
-            f"{caminho} não existe. Rode antes: python scripts/preparar_dados.py"
-        )
+        script = "preparar_fatura.py <faturas.pdf>" if pasta != DIR_DADOS else "preparar_dados.py"
+        raise SystemExit(f"{caminho} não existe. Rode antes: python scripts/{script}")
     with caminho.open(encoding="utf-8") as f:
         return [json.loads(linha) for linha in f]
 
